@@ -74,6 +74,11 @@ on:
         description: Deployment rollout timeout
         default: '300s'
         required: false
+      migrations:
+        type: string
+        description: Migrations configuration (JSON)
+        default: '{}'
+        required: false
 
 env:
   ECR_REGISTRY: ${{ inputs.ecr_registry }}
@@ -136,7 +141,10 @@ jobs:
           export NAMESPACE=${{ inputs.namespace }}
           helmfile --namespace ${{ inputs.namespace }} \
             -e ${{ inputs.environment }} \
-            diff
+            diff \
+            --set MIGRATIONS='${{ inputs.migrations }}' \
+            --set NAMESPACE=${{ inputs.namespace }} \
+            --set image=${{ steps.set-image.outputs.image }}
         continue-on-error: true
       
       - name: Helm install
@@ -145,7 +153,10 @@ jobs:
           export NAMESPACE=${{ inputs.namespace }}
           helmfile --namespace ${{ inputs.namespace }} \
             -e ${{ inputs.environment }} \
-            sync
+            sync \
+            --set MIGRATIONS='${{ inputs.migrations }}' \
+            --set NAMESPACE=${{ inputs.namespace }} \
+            --set image=${{ steps.set-image.outputs.image }}
       
       - name: Verify deployment
         id: verify
