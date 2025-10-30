@@ -133,21 +133,19 @@ jobs:
       - name: Helm diff
         run: |
           cd ${{ inputs.working_directory }}/${{ inputs.helm_file_path }}
+          export NAMESPACE=${{ inputs.namespace }}
           helmfile --namespace ${{ inputs.namespace }} \
             -e ${{ inputs.environment }} \
-            diff \
-            --set NAMESPACE=${{ inputs.namespace }} \
-            --set DOCKER_IMAGE=${{ steps.set-image.outputs.image }}
+            diff
         continue-on-error: true
       
       - name: Helm install
         run: |
           cd ${{ inputs.working_directory }}/${{ inputs.helm_file_path }}
+          export NAMESPACE=${{ inputs.namespace }}
           helmfile --namespace ${{ inputs.namespace }} \
             -e ${{ inputs.environment }} \
-            sync \
-            --set NAMESPACE=${{ inputs.namespace }} \
-            --set DOCKER_IMAGE=${{ steps.set-image.outputs.image }}
+            sync
       
       - name: Verify deployment
         id: verify
