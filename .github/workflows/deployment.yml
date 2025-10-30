@@ -144,7 +144,7 @@ jobs:
             diff \
             --set MIGRATIONS='${{ inputs.migrations }}' \
             --set NAMESPACE=${{ inputs.namespace }} \
-            --set image=${{ steps.set-image.outputs.image }}
+            --set DOCKER_IMAGE=${{ steps.set-image.outputs.image }}
         continue-on-error: true
       
       - name: Helm install
@@ -156,7 +156,7 @@ jobs:
             sync \
             --set MIGRATIONS='${{ inputs.migrations }}' \
             --set NAMESPACE=${{ inputs.namespace }} \
-            --set image=${{ steps.set-image.outputs.image }}
+            --set DOCKER_IMAGE=${{ steps.set-image.outputs.image }}
       
       - name: Verify deployment
         id: verify
