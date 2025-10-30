@@ -29,6 +29,11 @@ on:
         type: string
         description: AWS Account ID
         required: true
+      ecr_account_id:
+        type: string
+        description: ECR Registry AWS Account ID (where images and helm charts are stored)
+        default: '345594573454'
+        required: false
       eks_cluster_name:
         type: string
         description: EKS Cluster name
@@ -97,7 +102,7 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
         with:
-          registries: ${{ inputs.aws_account_id }}
+          registries: ${{ inputs.ecr_account_id }}
       
       - name: Setup helmfile
         uses: mamezou-tech/setup-helmfile@v2.1.0
