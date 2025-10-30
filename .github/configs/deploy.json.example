@@ -1,0 +1,25 @@
+{
+  "application-name__namespace.environment": {
+    "ECR_REPOSITORY": "your-ecr-repo",
+    "DOCKER_FILE": "Dockerfile",
+    "HELM_FILE_PATH": "../envs/prod",
+    "WORKING_DIRECTORY": "helm/your-app/code",
+    "ENVIRONMENT": "prod",
+    "NAMESPACE": "your-namespace",
+    "APPLICATION": "your-app",
+    "AWS_ACCOUNT_ID": "123456789012",
+    "EKS_CLUSTER_NAME": "prod-cluster"
+  },
+  "aurora-ai-agent__database-ai-agent-monitoring.prod": {
+    "ECR_REPOSITORY": "aurora-ai-agent",
+    "DOCKER_FILE": "Dockerfile",
+    "HELM_FILE_PATH": "../envs/prod",
+    "WORKING_DIRECTORY": "helm/aurora-ai-agent/code",
+    "ENVIRONMENT": "prod",
+    "NAMESPACE": "database-ai-agent-monitoring",
+    "APPLICATION": "aurora-ai-agent",
+    "AWS_ACCOUNT_ID": "905418253345",
+    "EKS_CLUSTER_NAME": "prod"
+  }
+}
+

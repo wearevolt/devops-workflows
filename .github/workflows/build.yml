@@ -1,0 +1,111 @@
+name: Build reusable workflow
+
+on:
+  workflow_call:
+    inputs:
+      namespace:
+        type: string
+        description: Namespace for build
+        required: true
+      environment:
+        type: string
+        description: Environment for build
+        required: true
+      application:
+        type: string
+        description: Application for build
+        required: true
+      ecr_registry:
+        type: string
+        description: ECR Registry URL
+        default: '345594573454.dkr.ecr.us-east-1.amazonaws.com'
+        required: false
+      aws_region:
+        type: string
+        description: AWS Region
+        default: 'us-east-1'
+        required: false
+      aws_account_id:
+        type: string
+        description: AWS Account ID for OIDC role
+        default: '345594573454'
+        required: false
+      github_oidc_role:
+        type: string
+        description: GitHub OIDC IAM role name
+        default: 'github-oidc-provider-aws'
+        required: false
+      working_directory:
+        type: string
+        description: Working directory for build context
+        required: true
+      docker_file:
+        type: string
+        description: Path to Dockerfile relative to working directory
+        default: 'Dockerfile'
+        required: false
+      ecr_repository:
+        type: string
+        description: ECR repository name
+        required: true
+    outputs:
+      image_tag:
+        description: "Built Docker image tag"
+        value: ${{ jobs.build.outputs.image_tag }}
+
+env:
+  ECR_REGISTRY: ${{ inputs.ecr_registry }}
+  REGION: ${{ inputs.aws_region }}
+
+jobs:
+  build:
+    permissions:
+      id-token: write
+      contents: read
+      actions: write
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.set-image-tag.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-region: ${{ inputs.aws_region }}
+          role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/${{ inputs.github_oidc_role }}
+      
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Set image tag
+        id: set-image-tag
+        run: |
+          IMAGE_TAG="${{ inputs.application }}.${{ inputs.namespace }}.${{ inputs.environment }}.${{ github.sha }}"
+          echo "tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "✅ Image tag: $IMAGE_TAG"
+      
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ inputs.working_directory }}
+          file: ${{ inputs.working_directory }}/${{ inputs.docker_file }}
+          push: true
+          tags: ${{ env.ECR_REGISTRY }}/${{ inputs.ecr_repository }}:${{ steps.set-image-tag.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      
+      - name: Build summary
+        run: |
+          echo "## 🚀 Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Application**: ${{ inputs.application }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Namespace**: ${{ inputs.namespace }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image**: ${{ env.ECR_REGISTRY }}/${{ inputs.ecr_repository }}:${{ steps.set-image-tag.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
+

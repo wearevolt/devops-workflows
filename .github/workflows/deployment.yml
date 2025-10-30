@@ -1,0 +1,177 @@
+name: Deployment reusable workflow
+
+on:
+  workflow_call:
+    inputs:
+      namespace:
+        type: string
+        description: Namespace for deploy
+        required: true
+      environment:
+        type: string
+        description: Environment for deploy
+        required: true
+      application:
+        type: string
+        description: Application for deploy
+        required: true
+      ecr_registry:
+        type: string
+        description: ECR Registry URL
+        default: '345594573454.dkr.ecr.us-east-1.amazonaws.com'
+        required: false
+      aws_region:
+        type: string
+        description: AWS Region
+        default: 'us-east-1'
+        required: false
+      aws_account_id:
+        type: string
+        description: AWS Account ID
+        required: true
+      eks_cluster_name:
+        type: string
+        description: EKS Cluster name
+        required: true
+      github_oidc_role:
+        type: string
+        description: GitHub OIDC IAM role name
+        default: 'iam-github-oidc-role'
+        required: false
+      working_directory:
+        type: string
+        description: Working directory for helmfile
+        required: true
+      helm_file_path:
+        type: string
+        description: Path to helmfile relative to working directory
+        required: true
+      ecr_repository:
+        type: string
+        description: ECR repository name
+        required: true
+      image_tag:
+        type: string
+        description: Docker image tag to deploy
+        required: true
+      kubectl_version:
+        type: string
+        description: Kubectl version
+        default: '1.34.1'
+        required: false
+      kubectl_release_date:
+        type: string
+        description: Kubectl release date
+        default: '2025-09-19'
+        required: false
+      deployment_timeout:
+        type: string
+        description: Deployment rollout timeout
+        default: '300s'
+        required: false
+
+env:
+  ECR_REGISTRY: ${{ inputs.ecr_registry }}
+  REGION: ${{ inputs.aws_region }}
+
+jobs:
+  deployment:
+    runs-on: ubuntu-latest
+    outputs:
+      status: ${{ steps.set-status.outputs.status }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ inputs.aws_region }}
+          role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/${{ inputs.github_oidc_role }}
+          role-session-name: github-actions-session
+      
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registries: ${{ inputs.aws_account_id }}
+      
+      - name: Setup helmfile
+        uses: mamezou-tech/setup-helmfile@v2.1.0
+        with:
+          kubectl-version: ${{ inputs.kubectl_version }}
+          kubectl-release-date: ${{ inputs.kubectl_release_date }}
+          additional-helm-plugins: https://github.com/jkroepke/helm-secrets --version v4.6.11
+          helm-diff-plugin-version: v3.9.14
+      
+      - name: Sops Binary Installer
+        uses: mdgreenwald/mozilla-sops-action@v1.6.0
+        id: install-sops
+      
+      - name: Update kubeconfig
+        run: |
+          aws eks --region ${{ inputs.aws_region }} update-kubeconfig \
+            --name ${{ inputs.eks_cluster_name }} \
+            --alias ${{ inputs.environment }}
+          echo "✅ Kubeconfig updated for cluster: ${{ inputs.eks_cluster_name }}"
+      
+      - name: Set image path
+        id: set-image
+        run: |
+          IMAGE_PATH="${{ env.ECR_REGISTRY }}/${{ inputs.ecr_repository }}:${{ inputs.image_tag }}"
+          echo "image=$IMAGE_PATH" >> $GITHUB_OUTPUT
+          echo "✅ Deploying image: $IMAGE_PATH"
+      
+      - name: Helm diff
+        run: |
+          cd ${{ inputs.working_directory }}/${{ inputs.helm_file_path }}
+          helmfile --namespace ${{ inputs.namespace }} \
+            -e ${{ inputs.environment }} \
+            diff \
+            --set NAMESPACE=${{ inputs.namespace }} \
+            --set DOCKER_IMAGE=${{ steps.set-image.outputs.image }}
+        continue-on-error: true
+      
+      - name: Helm install
+        run: |
+          cd ${{ inputs.working_directory }}/${{ inputs.helm_file_path }}
+          helmfile --namespace ${{ inputs.namespace }} \
+            -e ${{ inputs.environment }} \
+            sync \
+            --set NAMESPACE=${{ inputs.namespace }} \
+            --set DOCKER_IMAGE=${{ steps.set-image.outputs.image }}
+      
+      - name: Verify deployment
+        id: verify
+        run: |
+          kubectl rollout status deployment/${{ inputs.application }} \
+            -n ${{ inputs.namespace }} \
+            --timeout=${{ inputs.deployment_timeout }}
+          echo "✅ Deployment successful!"
+          kubectl get pods -n ${{ inputs.namespace }} -l app=${{ inputs.application }}
+      
+      - name: Set status
+        id: set-status
+        if: always()
+        run: |
+          if [ "${{ steps.verify.outcome }}" == "success" ]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+          else
+            echo "status=failed" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Deployment summary
+        if: always()
+        run: |
+          echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Application**: ${{ inputs.application }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Namespace**: ${{ inputs.namespace }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Cluster**: ${{ inputs.eks_cluster_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image**: ${{ steps.set-image.outputs.image }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ${{ steps.set-status.outputs.status }}" >> $GITHUB_STEP_SUMMARY
+
