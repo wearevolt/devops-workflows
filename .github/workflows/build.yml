@@ -80,6 +80,25 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
       
+      - name: Ensure ECR repository exists
+        id: ensure-ecr
+        run: |
+          REPO_NAME="${{ inputs.ecr_repository }}"
+          echo "Checking if ECR repository '$REPO_NAME' exists..."
+          
+          if aws ecr describe-repositories --repository-names "$REPO_NAME" 2>/dev/null; then
+            echo "Repository '$REPO_NAME' already exists"
+            echo "created=false" >> $GITHUB_OUTPUT
+          else
+            echo "Repository '$REPO_NAME' does not exist, creating..."
+            aws ecr create-repository \
+              --repository-name "$REPO_NAME" \
+              --image-scanning-configuration scanOnPush=true \
+              --encryption-configuration encryptionType=AES256
+            echo "Repository '$REPO_NAME' created successfully"
+            echo "created=true" >> $GITHUB_OUTPUT
+          fi
+      
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       
@@ -108,4 +127,7 @@ jobs:
           echo "- **Environment**: ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Namespace**: ${{ inputs.namespace }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Image**: ${{ env.ECR_REGISTRY }}/${{ inputs.ecr_repository }}:${{ steps.set-image-tag.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.ensure-ecr.outputs.created }}" = "true" ]; then
+            echo "- **ECR Repository**: Created automatically" >> $GITHUB_STEP_SUMMARY
+          fi
 

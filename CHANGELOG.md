@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2025-12-22
+
+### Added
+- **Auto-create ECR repositories**: Build workflow now automatically creates ECR repositories if they don't exist
+  - Repositories are created with image scanning enabled (scanOnPush=true)
+  - Uses AES256 encryption by default
+  - Shows "Created automatically" in build summary when repository was created
+
+### Changed
+- Build workflow now includes "Ensure ECR repository exists" step before building
+
 ## [1.0.0] - 2025-10-30
 
 ### Added
@@ -43,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Migration guide from old workflows
 - Troubleshooting section
 
-[Unreleased]: https://github.com/wearevolt/devops-workflows/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/wearevolt/devops-workflows/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/wearevolt/devops-workflows/compare/v1.0.0...v1.3.0
 [1.0.0]: https://github.com/wearevolt/devops-workflows/releases/tag/v1.0.0
 
