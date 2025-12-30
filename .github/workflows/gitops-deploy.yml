@@ -248,7 +248,7 @@ jobs:
             echo "[OK] ArgoCD Application '$ARGOCD_APP' already exists"
           else
             echo "[INFO] ArgoCD Application '$ARGOCD_APP' not found, creating..."
-            kubectl apply -f "gitops/$MANIFEST_PATH"
+            kubectl apply -f "gitops/$MANIFEST_PATH" --validate=false
             echo "[OK] ArgoCD Application created"
             # Give ArgoCD a moment to register the new application
             sleep 5
