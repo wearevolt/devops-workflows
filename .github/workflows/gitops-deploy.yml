@@ -92,6 +92,11 @@ on:
         description: ArgoCD sync timeout in seconds
         default: 300
         required: false
+      argocd_app_manifest_path:
+        type: string
+        description: Path to ArgoCD Application manifest in GitOps repo (e.g., argocd/applications/app-dev.yaml)
+        required: false
+        default: ''
       
       # Optional: Skip verification (for faster deploys)
       skip_verification:
@@ -222,6 +227,32 @@ jobs:
           aws eks update-kubeconfig \
             --name ${{ inputs.eks_cluster_name }} \
             --region ${{ inputs.aws_region }}
+
+      - name: Checkout GitOps Repo (for ArgoCD manifest)
+        if: ${{ inputs.argocd_app_manifest_path != '' }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.gitops_repository }}
+          token: ${{ secrets.GITOPS_PAT }}
+          ref: ${{ inputs.gitops_branch }}
+          path: gitops
+
+      - name: Ensure ArgoCD Application exists
+        if: ${{ inputs.argocd_app_manifest_path != '' }}
+        env:
+          ARGOCD_APP: ${{ inputs.argocd_app_name }}
+          ARGOCD_NS: ${{ inputs.argocd_namespace }}
+          MANIFEST_PATH: ${{ inputs.argocd_app_manifest_path }}
+        run: |
+          if kubectl get application "$ARGOCD_APP" -n "$ARGOCD_NS" &>/dev/null; then
+            echo "[OK] ArgoCD Application '$ARGOCD_APP' already exists"
+          else
+            echo "[INFO] ArgoCD Application '$ARGOCD_APP' not found, creating..."
+            kubectl apply -f "gitops/$MANIFEST_PATH"
+            echo "[OK] ArgoCD Application created"
+            # Give ArgoCD a moment to register the new application
+            sleep 5
+          fi
 
       - name: Wait for ArgoCD sync
         id: wait-sync
