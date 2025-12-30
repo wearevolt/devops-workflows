@@ -103,7 +103,7 @@ on:
     secrets:
       GITOPS_PAT:
         description: GitHub PAT with access to GitOps repository
-        required: true
+        required: false
 
     outputs:
       image_tag:
