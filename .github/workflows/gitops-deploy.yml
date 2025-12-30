@@ -100,6 +100,11 @@ on:
         default: false
         required: false
 
+    secrets:
+      GITOPS_PAT:
+        description: GitHub PAT with access to GitOps repository
+        required: true
+
     outputs:
       image_tag:
         description: "Built Docker image tag"
