@@ -243,7 +243,12 @@ jobs:
           ARGOCD_APP: ${{ inputs.argocd_app_name }}
           ARGOCD_NS: ${{ inputs.argocd_namespace }}
           MANIFEST_PATH: ${{ inputs.argocd_app_manifest_path }}
+          EKS_CLUSTER: ${{ inputs.eks_cluster_name }}
+          AWS_REGION: ${{ inputs.aws_region }}
         run: |
+          # Re-update kubeconfig (checkout may affect HOME)
+          aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "$AWS_REGION"
+          
           if kubectl get application "$ARGOCD_APP" -n "$ARGOCD_NS" &>/dev/null; then
             echo "[OK] ArgoCD Application '$ARGOCD_APP' already exists"
           else
