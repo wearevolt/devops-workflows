@@ -1,0 +1,291 @@
+name: GitOps Deploy reusable workflow
+
+# Reusable workflow for deploying to a single environment via GitOps + ArgoCD
+# Use with matrix strategy for multi-environment deployments
+
+on:
+  workflow_call:
+    inputs:
+      # Environment configuration
+      environment:
+        type: string
+        description: Environment name (e.g., dev, spice, pjc)
+        required: true
+      namespace:
+        type: string
+        description: Kubernetes namespace
+        required: true
+      application:
+        type: string
+        description: Application name
+        required: true
+      
+      # AWS configuration
+      aws_account_id:
+        type: string
+        description: AWS Account ID
+        required: true
+      aws_region:
+        type: string
+        description: AWS Region
+        default: 'us-east-1'
+        required: false
+      eks_cluster_name:
+        type: string
+        description: EKS Cluster name
+        required: true
+      github_oidc_role:
+        type: string
+        description: GitHub OIDC IAM role name
+        default: 'github-oidc-provider-aws'
+        required: false
+      
+      # ECR configuration
+      ecr_repository:
+        type: string
+        description: ECR repository name
+        required: true
+      
+      # Build configuration
+      working_directory:
+        type: string
+        description: Working directory for build context
+        default: '.'
+        required: false
+      docker_file:
+        type: string
+        description: Path to Dockerfile relative to working directory
+        default: 'Dockerfile'
+        required: false
+      
+      # GitOps configuration
+      gitops_repository:
+        type: string
+        description: GitOps repository (e.g., wearevolt/twenty-scripts-gitops)
+        required: true
+      gitops_branch:
+        type: string
+        description: GitOps repository branch
+        default: 'main'
+        required: false
+      kustomize_path:
+        type: string
+        description: Path to kustomize overlay in GitOps repo
+        required: true
+      image_name:
+        type: string
+        description: Image name in kustomization.yaml (for kustomize edit set image)
+        required: true
+      
+      # ArgoCD configuration
+      argocd_app_name:
+        type: string
+        description: ArgoCD Application name
+        required: true
+      argocd_namespace:
+        type: string
+        description: ArgoCD namespace
+        default: 'devtroncd'
+        required: false
+      argocd_sync_timeout:
+        type: number
+        description: ArgoCD sync timeout in seconds
+        default: 300
+        required: false
+      
+      # Optional: Skip verification (for faster deploys)
+      skip_verification:
+        type: boolean
+        description: Skip ArgoCD sync verification
+        default: false
+        required: false
+
+    outputs:
+      image_tag:
+        description: "Built Docker image tag"
+        value: ${{ jobs.build.outputs.image_tag }}
+      deployment_status:
+        description: "Deployment status (success/failed/skipped)"
+        value: ${{ jobs.verify.outputs.status }}
+
+jobs:
+  build:
+    name: Build [${{ inputs.environment }}]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      image_tag: ${{ steps.set-image-tag.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ inputs.aws_region }}
+          role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/${{ inputs.github_oidc_role }}
+      
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      
+      - name: Ensure ECR repository exists
+        run: |
+          REPO_NAME="${{ inputs.ecr_repository }}"
+          if ! aws ecr describe-repositories --repository-names "$REPO_NAME" 2>/dev/null; then
+            echo "Creating ECR repository '$REPO_NAME'..."
+            aws ecr create-repository \
+              --repository-name "$REPO_NAME" \
+              --image-scanning-configuration scanOnPush=true
+          fi
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Set image tag
+        id: set-image-tag
+        run: |
+          IMAGE_TAG="${{ inputs.application }}.${{ inputs.namespace }}.${{ inputs.environment }}.${{ github.sha }}"
+          echo "tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+      
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        env:
+          ECR_REGISTRY: ${{ inputs.aws_account_id }}.dkr.ecr.${{ inputs.aws_region }}.amazonaws.com
+        with:
+          context: ${{ inputs.working_directory }}
+          file: ${{ inputs.working_directory }}/${{ inputs.docker_file }}
+          push: true
+          tags: ${{ env.ECR_REGISTRY }}/${{ inputs.ecr_repository }}:${{ steps.set-image-tag.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  update-gitops:
+    name: Update GitOps [${{ inputs.environment }}]
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout GitOps Repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.gitops_repository }}
+          token: ${{ secrets.GITOPS_PAT }}
+          ref: ${{ inputs.gitops_branch }}
+          path: gitops
+
+      - name: Setup Kustomize
+        uses: imranismail/setup-kustomize@v2
+
+      - name: Update Images with Kustomize
+        working-directory: gitops/${{ inputs.kustomize_path }}
+        env:
+          ECR_REGISTRY: ${{ inputs.aws_account_id }}.dkr.ecr.${{ inputs.aws_region }}.amazonaws.com
+          ECR_REPO: ${{ inputs.ecr_repository }}
+          IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
+          IMAGE_NAME: ${{ inputs.image_name }}
+        run: |
+          kustomize edit set image ${IMAGE_NAME}=${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
+          echo "Updated image to: ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}"
+          
+      - name: Commit and Push
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          repository: gitops
+          commit_message: "chore(deploy): [${{ inputs.environment }}] update ${{ inputs.application }} to ${{ needs.build.outputs.image_tag }}"
+          branch: ${{ inputs.gitops_branch }}
+          file_pattern: .
+
+  verify:
+    name: Verify [${{ inputs.environment }}]
+    needs: [build, update-gitops]
+    if: ${{ inputs.skip_verification == false }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      status: ${{ steps.set-status.outputs.status }}
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ inputs.aws_region }}
+          role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/${{ inputs.github_oidc_role }}
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ inputs.eks_cluster_name }} \
+            --region ${{ inputs.aws_region }}
+
+      - name: Wait for ArgoCD sync
+        id: wait-sync
+        env:
+          ARGOCD_APP: ${{ inputs.argocd_app_name }}
+          ARGOCD_NS: ${{ inputs.argocd_namespace }}
+          TIMEOUT: ${{ inputs.argocd_sync_timeout }}
+        run: |
+          echo "=== Waiting for ArgoCD application '$ARGOCD_APP' to sync ==="
+          
+          start_time=$(date +%s)
+          while true; do
+            STATUS=$(kubectl get application "$ARGOCD_APP" -n "$ARGOCD_NS" -o jsonpath='{.status.sync.status}' 2>/dev/null || echo "Unknown")
+            HEALTH=$(kubectl get application "$ARGOCD_APP" -n "$ARGOCD_NS" -o jsonpath='{.status.health.status}' 2>/dev/null || echo "Unknown")
+            
+            echo "Sync: $STATUS | Health: $HEALTH"
+            
+            if [[ "$STATUS" == "Synced" && "$HEALTH" == "Healthy" ]]; then
+              echo "[OK] Application is synced and healthy!"
+              echo "synced=true" >> $GITHUB_OUTPUT
+              break
+            fi
+            
+            current_time=$(date +%s)
+            elapsed=$((current_time - start_time))
+            if [[ $elapsed -ge $TIMEOUT ]]; then
+              echo "[ERROR] Timeout waiting for application to sync"
+              echo "synced=false" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+            
+            sleep 10
+          done
+
+      - name: Set status
+        id: set-status
+        if: always()
+        run: |
+          if [ "${{ steps.wait-sync.outputs.synced }}" == "true" ]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+          else
+            echo "status=failed" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Deployment Summary
+        if: always()
+        env:
+          ARGOCD_APP: ${{ inputs.argocd_app_name }}
+          ARGOCD_NS: ${{ inputs.argocd_namespace }}
+          NAMESPACE: ${{ inputs.namespace }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          echo "## Deployment Summary [$ENVIRONMENT]" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: $ENVIRONMENT" >> $GITHUB_STEP_SUMMARY
+          echo "- **Application**: ${{ inputs.application }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Namespace**: $NAMESPACE" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image Tag**: ${{ needs.build.outputs.image_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          SYNC_STATUS=$(kubectl get application "$ARGOCD_APP" -n "$ARGOCD_NS" -o jsonpath='{.status.sync.status}' 2>/dev/null || echo "Unknown")
+          HEALTH_STATUS=$(kubectl get application "$ARGOCD_APP" -n "$ARGOCD_NS" -o jsonpath='{.status.health.status}' 2>/dev/null || echo "Unknown")
+          
+          echo "### ArgoCD Status" >> $GITHUB_STEP_SUMMARY
+          echo "- **Sync**: $SYNC_STATUS" >> $GITHUB_STEP_SUMMARY
+          echo "- **Health**: $HEALTH_STATUS" >> $GITHUB_STEP_SUMMARY
+
