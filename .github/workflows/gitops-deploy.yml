@@ -45,6 +45,11 @@ on:
         type: string
         description: ECR repository name
         required: true
+      ecr_shared_account_id:
+        type: string
+        description: Shared ECR Account ID (for cross-account image promotion). If set, images are pushed to this account instead of aws_account_id.
+        required: false
+        default: ''
       
       # Build configuration
       working_directory:
@@ -57,6 +62,11 @@ on:
         description: Path to Dockerfile relative to working directory
         default: 'Dockerfile'
         required: false
+      build_args:
+        type: string
+        description: Docker build arguments (e.g., APP_NAME=my-app)
+        required: false
+        default: ''
       
       # GitOps configuration
       gitops_repository:
@@ -126,11 +136,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       
-      - name: Configure AWS Credentials
+      - name: Configure AWS Credentials for ECR
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: ${{ inputs.aws_region }}
-          role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/${{ inputs.github_oidc_role }}
+          # Use shared ECR account if provided, otherwise use environment account
+          role-to-assume: arn:aws:iam::${{ inputs.ecr_shared_account_id != '' && inputs.ecr_shared_account_id || inputs.aws_account_id }}:role/${{ inputs.github_oidc_role }}
       
       - name: Login to Amazon ECR
         id: login-ecr
@@ -158,12 +169,15 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v5
         env:
-          ECR_REGISTRY: ${{ inputs.aws_account_id }}.dkr.ecr.${{ inputs.aws_region }}.amazonaws.com
+          # Use shared ECR account if provided, otherwise use environment account
+          ECR_ACCOUNT: ${{ inputs.ecr_shared_account_id != '' && inputs.ecr_shared_account_id || inputs.aws_account_id }}
+          ECR_REGISTRY: ${{ inputs.ecr_shared_account_id != '' && inputs.ecr_shared_account_id || inputs.aws_account_id }}.dkr.ecr.${{ inputs.aws_region }}.amazonaws.com
         with:
           context: ${{ inputs.working_directory }}
           file: ${{ inputs.working_directory }}/${{ inputs.docker_file }}
           push: true
           tags: ${{ env.ECR_REGISTRY }}/${{ inputs.ecr_repository }}:${{ steps.set-image-tag.outputs.tag }}
+          build-args: ${{ inputs.build_args }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -248,6 +262,14 @@ jobs:
         run: |
           # Re-update kubeconfig (checkout may affect HOME)
           aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "$AWS_REGION"
+          
+          # Debug: check current identity
+          echo "=== AWS Identity ==="
+          aws sts get-caller-identity
+          
+          # Debug: test kubectl access
+          echo "=== Testing kubectl access ==="
+          kubectl get nodes --request-timeout=10s || echo "[WARN] Cannot list nodes"
           
           if kubectl get application "$ARGOCD_APP" -n "$ARGOCD_NS" &>/dev/null; then
             echo "[OK] ArgoCD Application '$ARGOCD_APP' already exists"
