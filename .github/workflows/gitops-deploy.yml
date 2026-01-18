@@ -45,9 +45,9 @@ on:
         type: string
         description: ECR repository name
         required: true
-      ecr_shared_account_id:
+      ecr_account_id:
         type: string
-        description: Shared ECR Account ID (for cross-account image promotion). If set, images are pushed to this account instead of aws_account_id.
+        description: ECR Account ID for images. If set, images are pushed/pulled from this account instead of aws_account_id. Can be shared ECR or any other account.
         required: false
         default: ''
       
@@ -140,8 +140,8 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: ${{ inputs.aws_region }}
-          # Use shared ECR account if provided, otherwise use environment account
-          role-to-assume: arn:aws:iam::${{ inputs.ecr_shared_account_id != '' && inputs.ecr_shared_account_id || inputs.aws_account_id }}:role/${{ inputs.github_oidc_role }}
+          # Use ECR account if provided, otherwise use environment account
+          role-to-assume: arn:aws:iam::${{ inputs.ecr_account_id != '' && inputs.ecr_account_id || inputs.aws_account_id }}:role/${{ inputs.github_oidc_role }}
       
       - name: Login to Amazon ECR
         id: login-ecr
@@ -169,9 +169,9 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v5
         env:
-          # Use shared ECR account if provided, otherwise use environment account
-          ECR_ACCOUNT: ${{ inputs.ecr_shared_account_id != '' && inputs.ecr_shared_account_id || inputs.aws_account_id }}
-          ECR_REGISTRY: ${{ inputs.ecr_shared_account_id != '' && inputs.ecr_shared_account_id || inputs.aws_account_id }}.dkr.ecr.${{ inputs.aws_region }}.amazonaws.com
+          # Use ECR account if provided, otherwise use environment account
+          ECR_ACCOUNT: ${{ inputs.ecr_account_id != '' && inputs.ecr_account_id || inputs.aws_account_id }}
+          ECR_REGISTRY: ${{ inputs.ecr_account_id != '' && inputs.ecr_account_id || inputs.aws_account_id }}.dkr.ecr.${{ inputs.aws_region }}.amazonaws.com
         with:
           context: ${{ inputs.working_directory }}
           file: ${{ inputs.working_directory }}/${{ inputs.docker_file }}
@@ -200,8 +200,8 @@ jobs:
       - name: Update Images with Kustomize
         working-directory: gitops/${{ inputs.kustomize_path }}
         env:
-          # Use shared ECR account if provided, otherwise use environment account
-          ECR_REGISTRY: ${{ inputs.ecr_shared_account_id != '' && inputs.ecr_shared_account_id || inputs.aws_account_id }}.dkr.ecr.${{ inputs.aws_region }}.amazonaws.com
+          # Use ECR account if provided, otherwise use environment account
+          ECR_REGISTRY: ${{ inputs.ecr_account_id != '' && inputs.ecr_account_id || inputs.aws_account_id }}.dkr.ecr.${{ inputs.aws_region }}.amazonaws.com
           ECR_REPO: ${{ inputs.ecr_repository }}
           IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
           IMAGE_NAME: ${{ inputs.image_name }}
