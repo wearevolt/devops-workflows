@@ -200,7 +200,8 @@ jobs:
       - name: Update Images with Kustomize
         working-directory: gitops/${{ inputs.kustomize_path }}
         env:
-          ECR_REGISTRY: ${{ inputs.aws_account_id }}.dkr.ecr.${{ inputs.aws_region }}.amazonaws.com
+          # Use shared ECR account if provided, otherwise use environment account
+          ECR_REGISTRY: ${{ inputs.ecr_shared_account_id != '' && inputs.ecr_shared_account_id || inputs.aws_account_id }}.dkr.ecr.${{ inputs.aws_region }}.amazonaws.com
           ECR_REPO: ${{ inputs.ecr_repository }}
           IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
           IMAGE_NAME: ${{ inputs.image_name }}
