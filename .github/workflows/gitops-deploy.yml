@@ -178,6 +178,8 @@ jobs:
           push: true
           tags: ${{ env.ECR_REGISTRY }}/${{ inputs.ecr_repository }}:${{ steps.set-image-tag.outputs.tag }}
           build-args: ${{ inputs.build_args }}
+          secrets: |
+            GIT_SSH_KEY=${{ secrets.GIT_SSH_KEY }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
