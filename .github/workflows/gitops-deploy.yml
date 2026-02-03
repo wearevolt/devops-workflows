@@ -114,18 +114,34 @@ on:
         description: Skip ArgoCD sync verification
         default: false
         required: false
+      
+      # Optional: Custom image tag (e.g., semver tag like v1.0.0)
+      image_tag:
+        type: string
+        description: Custom Docker image tag. If not provided, generates tag as {application}.{namespace}.{environment}.{sha}
+        required: false
+        default: ''
+      
+      # Optional: Skip build (for promotion/rollback using existing image)
+      skip_build:
+        type: boolean
+        description: Skip Docker build and use existing image. Requires image_tag to be set. Use for promotion or rollback.
+        default: false
+        required: false
 
     outputs:
       image_tag:
-        description: "Built Docker image tag"
-        value: ${{ jobs.build.outputs.image_tag }}
+        description: "Docker image tag used for deployment"
+        value: ${{ jobs.build.outputs.image_tag || jobs.skip-build.outputs.image_tag }}
       deployment_status:
         description: "Deployment status (success/failed/skipped)"
         value: ${{ jobs.verify.outputs.status }}
 
 jobs:
+  # Job that runs when skip_build is false (default) - builds and pushes Docker image
   build:
     name: Build [${{ inputs.environment }}]
+    if: ${{ inputs.skip_build == false }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -163,8 +179,15 @@ jobs:
       - name: Set image tag
         id: set-image-tag
         run: |
-          IMAGE_TAG="${{ inputs.application }}.${{ inputs.namespace }}.${{ inputs.environment }}.${{ github.sha }}"
+          if [ -n "${{ inputs.image_tag }}" ]; then
+            # Use custom image tag if provided
+            IMAGE_TAG="${{ inputs.image_tag }}"
+          else
+            # Generate default tag: {application}.{namespace}.{environment}.{sha}
+            IMAGE_TAG="${{ inputs.application }}.${{ inputs.namespace }}.${{ inputs.environment }}.${{ github.sha }}"
+          fi
           echo "tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "Using image tag: $IMAGE_TAG"
       
       - name: Build and push
         uses: docker/build-push-action@v5
@@ -183,9 +206,54 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  # Job that runs when skip_build is true - validates image exists and outputs tag
+  skip-build:
+    name: Skip Build (Promotion) [${{ inputs.environment }}]
+    if: ${{ inputs.skip_build == true }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      image_tag: ${{ steps.validate.outputs.tag }}
+    steps:
+      - name: Validate inputs
+        id: validate
+        run: |
+          if [ -z "${{ inputs.image_tag }}" ]; then
+            echo "[ERROR] skip_build is true but image_tag is not provided!"
+            echo "For promotion/rollback, you must specify the image_tag to deploy."
+            exit 1
+          fi
+          echo "tag=${{ inputs.image_tag }}" >> $GITHUB_OUTPUT
+          echo "[OK] Using existing image tag: ${{ inputs.image_tag }}"
+      
+      - name: Configure AWS Credentials for ECR
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ inputs.aws_region }}
+          role-to-assume: arn:aws:iam::${{ inputs.ecr_account_id != '' && inputs.ecr_account_id || inputs.aws_account_id }}:role/${{ inputs.github_oidc_role }}
+      
+      - name: Verify image exists in ECR
+        env:
+          ECR_REGISTRY: ${{ inputs.ecr_account_id != '' && inputs.ecr_account_id || inputs.aws_account_id }}.dkr.ecr.${{ inputs.aws_region }}.amazonaws.com
+          ECR_REPO: ${{ inputs.ecr_repository }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          echo "Verifying image exists: ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}"
+          if aws ecr describe-images --repository-name "$ECR_REPO" --image-ids imageTag="$IMAGE_TAG" &>/dev/null; then
+            echo "[OK] Image found in ECR"
+          else
+            echo "[ERROR] Image not found: ${ECR_REPO}:${IMAGE_TAG}"
+            echo "Available tags:"
+            aws ecr describe-images --repository-name "$ECR_REPO" --query 'imageDetails[*].imageTags' --output text | tr '\t' '\n' | sort -V | tail -10
+            exit 1
+          fi
+
   update-gitops:
     name: Update GitOps [${{ inputs.environment }}]
-    needs: build
+    needs: [build, skip-build]
+    if: ${{ always() && (needs.build.result == 'success' || needs.skip-build.result == 'success') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout GitOps Repo
@@ -205,7 +273,8 @@ jobs:
           # Use ECR account if provided, otherwise use environment account
           ECR_REGISTRY: ${{ inputs.ecr_account_id != '' && inputs.ecr_account_id || inputs.aws_account_id }}.dkr.ecr.${{ inputs.aws_region }}.amazonaws.com
           ECR_REPO: ${{ inputs.ecr_repository }}
-          IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
+          # Use image_tag from whichever job ran (build or skip-build)
+          IMAGE_TAG: ${{ needs.build.outputs.image_tag || needs.skip-build.outputs.image_tag }}
           IMAGE_NAME: ${{ inputs.image_name }}
         run: |
           kustomize edit set image ${IMAGE_NAME}=${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
@@ -213,16 +282,18 @@ jobs:
           
       - name: Commit and Push
         uses: stefanzweifel/git-auto-commit-action@v5
+        env:
+          IMAGE_TAG: ${{ needs.build.outputs.image_tag || needs.skip-build.outputs.image_tag }}
         with:
           repository: gitops
-          commit_message: "chore(deploy): [${{ inputs.environment }}] update ${{ inputs.application }} to ${{ needs.build.outputs.image_tag }}"
+          commit_message: "chore(deploy): [${{ inputs.environment }}] update ${{ inputs.application }} to ${{ env.IMAGE_TAG }}"
           branch: ${{ inputs.gitops_branch }}
           file_pattern: .
 
   verify:
     name: Verify [${{ inputs.environment }}]
-    needs: [build, update-gitops]
-    if: ${{ inputs.skip_verification == false }}
+    needs: [build, skip-build, update-gitops]
+    if: ${{ always() && needs.update-gitops.result == 'success' && inputs.skip_verification == false }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -340,7 +411,8 @@ jobs:
           echo "- **Environment**: $ENVIRONMENT" >> $GITHUB_STEP_SUMMARY
           echo "- **Application**: ${{ inputs.application }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Namespace**: $NAMESPACE" >> $GITHUB_STEP_SUMMARY
-          echo "- **Image Tag**: ${{ needs.build.outputs.image_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image Tag**: ${{ needs.build.outputs.image_tag || needs.skip-build.outputs.image_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Mode**: ${{ inputs.skip_build && 'Promotion/Rollback' || 'Build & Deploy' }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
           SYNC_STATUS=$(kubectl get application "$ARGOCD_APP" -n "$ARGOCD_NS" -o jsonpath='{.status.sync.status}' 2>/dev/null || echo "Unknown")

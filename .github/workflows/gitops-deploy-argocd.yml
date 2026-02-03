@@ -153,13 +153,63 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
       
       - name: Ensure ECR repository exists
+        env:
+          REPO_NAME: ${{ inputs.ecr_repository }}
+          TARGET_ACCOUNT_ID: ${{ inputs.aws_account_id }}
+          ECR_ACCOUNT_ID: ${{ inputs.ecr_account_id != '' && inputs.ecr_account_id || inputs.aws_account_id }}
         run: |
-          REPO_NAME="${{ inputs.ecr_repository }}"
           if ! aws ecr describe-repositories --repository-names "$REPO_NAME" 2>/dev/null; then
             echo "Creating ECR repository '$REPO_NAME'..."
             aws ecr create-repository \
               --repository-name "$REPO_NAME" \
               --image-scanning-configuration scanOnPush=true
+            
+            # Add cross-account pull policy if ECR is in different account than target
+            if [ "$ECR_ACCOUNT_ID" != "$TARGET_ACCOUNT_ID" ]; then
+              echo "Adding cross-account pull policy for account $TARGET_ACCOUNT_ID..."
+              aws ecr set-repository-policy \
+                --repository-name "$REPO_NAME" \
+                --policy-text '{
+                  "Version": "2012-10-17",
+                  "Statement": [
+                    {
+                      "Sid": "AllowCrossAccountPull",
+                      "Effect": "Allow",
+                      "Principal": {
+                        "AWS": "arn:aws:iam::'"$TARGET_ACCOUNT_ID"':root"
+                      },
+                      "Action": [
+                        "ecr:GetDownloadUrlForLayer",
+                        "ecr:BatchGetImage",
+                        "ecr:BatchCheckLayerAvailability"
+                      ]
+                    }
+                  ]
+                }'
+            fi
+            
+            # Add lifecycle policy to keep only last 10 images
+            echo "Adding lifecycle policy to keep only last 10 images..."
+            aws ecr put-lifecycle-policy \
+              --repository-name "$REPO_NAME" \
+              --lifecycle-policy-text '{
+                "rules": [
+                  {
+                    "rulePriority": 1,
+                    "description": "Keep only last 20 images",
+                    "selection": {
+                      "tagStatus": "any",
+                      "countType": "imageCountMoreThan",
+                      "countNumber": 20
+                    },
+                    "action": {
+                      "type": "expire"
+                    }
+                  }
+                ]
+              }'
+            
+            echo "ECR repository '$REPO_NAME' created with policies"
           fi
       
       - name: Set up Docker Buildx
