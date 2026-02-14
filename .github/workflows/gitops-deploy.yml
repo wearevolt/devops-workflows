@@ -360,31 +360,50 @@ jobs:
         env:
           ARGOCD_APP: ${{ inputs.argocd_app_name }}
           ARGOCD_NS: ${{ inputs.argocd_namespace }}
+          EXPECTED_TAG: ${{ needs.build.outputs.image_tag || needs.skip-build.outputs.image_tag }}
+          NAMESPACE: ${{ inputs.namespace }}
           TIMEOUT: ${{ inputs.argocd_sync_timeout }}
         run: |
           echo "=== Waiting for ArgoCD application '$ARGOCD_APP' to sync ==="
-          
+          echo "Expected image tag: $EXPECTED_TAG"
+
           start_time=$(date +%s)
           while true; do
+            # Check ArgoCD sync and health status
             STATUS=$(kubectl get application "$ARGOCD_APP" -n "$ARGOCD_NS" -o jsonpath='{.status.sync.status}' 2>/dev/null || echo "Unknown")
             HEALTH=$(kubectl get application "$ARGOCD_APP" -n "$ARGOCD_NS" -o jsonpath='{.status.health.status}' 2>/dev/null || echo "Unknown")
-            
-            echo "Sync: $STATUS | Health: $HEALTH"
-            
-            if [[ "$STATUS" == "Synced" && "$HEALTH" == "Healthy" ]]; then
-              echo "[OK] Application is synced and healthy!"
+
+            # Check actual deployed image tag in the namespace
+            CURRENT_IMAGE=$(kubectl get deployment -n "$NAMESPACE" -o jsonpath='{.items[0].spec.template.spec.containers[0].image}' 2>/dev/null || echo "")
+            CURRENT_TAG=$(echo "$CURRENT_IMAGE" | grep -oP ':[^:]+$' | cut -d: -f2)
+
+            echo "Sync: $STATUS | Health: $HEALTH | Current tag: ${CURRENT_TAG:-none}"
+
+            # Success if synced AND healthy AND correct image deployed
+            if [[ "$STATUS" == "Synced" && "$HEALTH" == "Healthy" && "$CURRENT_TAG" == "$EXPECTED_TAG" ]]; then
+              echo "[OK] Application is synced, healthy, and has correct image!"
               echo "synced=true" >> $GITHUB_OUTPUT
               break
             fi
-            
+
+            # Also accept if image matches and health is good, even if sync status is temporarily Unknown
+            # This handles re-runs where the image tag hasn't changed
+            if [[ "$HEALTH" == "Healthy" && "$CURRENT_TAG" == "$EXPECTED_TAG" ]]; then
+              echo "[OK] Application is healthy with correct image (sync status: $STATUS)"
+              echo "synced=true" >> $GITHUB_OUTPUT
+              break
+            fi
+
             current_time=$(date +%s)
             elapsed=$((current_time - start_time))
             if [[ $elapsed -ge $TIMEOUT ]]; then
               echo "[ERROR] Timeout waiting for application to sync"
+              echo "Status: $STATUS | Health: $HEALTH"
+              echo "Expected tag: $EXPECTED_TAG | Current tag: ${CURRENT_TAG:-none}"
               echo "synced=false" >> $GITHUB_OUTPUT
               exit 1
             fi
-            
+
             sleep 10
           done
 
